@@ -1,12 +1,13 @@
 import copy
 import math
 import datetime
+import warnings
 
 import numpy as np
 
 from kbdiffdi.features import feature
 
-np.warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore')
 
 class FFDI(object):
     
@@ -50,7 +51,9 @@ class FFDI(object):
         n = 0
         window = 20 # to look at the past 20 days. (20 including the current day. So there will only be a 19 days ago max. today is zero days ago. there is a total of 20 days analyzed though)
         x_3d_arr = None
-        while n < len(self.prcp.data):
+        total = len(self.prcp.data)
+        step = max(1, total // 20)
+        while n < total:
             if n < window:
                 prev_rain_cube = np.array(self.prcp.data[:n+1]) # use all available past data, because there hasn't been 20 days of data yet
             else:
@@ -113,10 +116,13 @@ class FFDI(object):
             #rainsumlist.append(rainSum)
             x = self.calc_x(days_ago, rain_sum)
             if x_3d_arr is None:
-                x_3d_arr = np.array([x])
-            else:
-                x_3d_arr = np.append(x_3d_arr, [x], axis=0)
+                # preallocate now that the per-day shape is known, then fill by
+                # index. avoids the O(n^2) reallocate-and-copy of np.append in a loop.
+                x_3d_arr = np.zeros((total,) + x.shape)
+            x_3d_arr[n] = x
             n+=1
+            if n % step == 0 or n == total:
+                print("    [FFDI] significant rain events: %d/%d days (%d%%)" % (n, total, 100 * n // total))
         out = copy.deepcopy(self.prcp)
         out.data = x_3d_arr #out.set_data(x_3d_arr)
         return out

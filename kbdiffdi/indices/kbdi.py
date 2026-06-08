@@ -72,12 +72,17 @@ class KBDI(object):
 
         #variables for the calculation
         daily_prcp = copy.deepcopy(self.prcp.data) # the precipitation data
-        running_total = np.zeros(shape=(1, len(self.prcp.data[0]), len(self.prcp.data[0][0]))) # a running total for continuous rain days
-        consec = np.zeros(shape=(len(self.prcp.data[0]), len(self.prcp.data[0][0])), dtype=bool) # which cells see consecutive rainfall?
-        already_subtracted = np.zeros(shape=(len(self.prcp.data[0]), len(self.prcp.data[0][0])), dtype=bool) # has the 0.20 threshold been met and 0.20 subtracted?
+        # per-cell state, shaped to match a single day's slab daily_prcp[n] =
+        # (nlayers, nrows, ncols). the previous code dropped the ncols axis, which
+        # only worked for single-cell (1,1,1) data and broke on real grids.
+        running_total = np.zeros(shape=(len(self.prcp.data[0]), len(self.prcp.data[0][0]), len(self.prcp.data[0][0][0]))) # a running total for continuous rain days
+        consec = np.zeros(shape=(len(self.prcp.data[0]), len(self.prcp.data[0][0]), len(self.prcp.data[0][0][0])), dtype=bool) # which cells see consecutive rainfall?
+        already_subtracted = np.zeros(shape=(len(self.prcp.data[0]), len(self.prcp.data[0][0]), len(self.prcp.data[0][0][0])), dtype=bool) # has the 0.20 threshold been met and 0.20 subtracted?
 
         n=0
-        while n < len(daily_prcp):
+        total = len(daily_prcp)
+        step = max(1, total // 20)
+        while n < total:
             running_total += daily_prcp[n]
             # if dailyPrcp[n] == 0: 
             net_rainfall[n] = np.where(daily_prcp[n] == 0, 0, net_rainfall[n])
@@ -89,8 +94,8 @@ class KBDI(object):
                 consec = np.where((daily_prcp[n] > 0) & (daily_prcp[n-1] > 0), True, False)
 
             #if dailyPrcp[n] > 0 and consec and alreadySubtracted:
-            net_rainfall[n] = np.where((daily_prcp[n] > 0) & (consec == True) and (already_subtracted == True), daily_prcp[n], net_rainfall[n])
-            running_total = np.where((daily_prcp[n] > 0) & (consec == True) and (already_subtracted == True), 0, running_total)
+            net_rainfall[n] = np.where((daily_prcp[n] > 0) & (consec == True) & (already_subtracted == True), daily_prcp[n], net_rainfall[n])
+            running_total = np.where((daily_prcp[n] > 0) & (consec == True) & (already_subtracted == True), 0, running_total)
 
             #if dailyPrcp[n] > 0.20 and consec and not alreadySubtracted:
             net_rainfall[n] = np.where((daily_prcp[n] > threshold) & (consec == True) & (already_subtracted == False), running_total - threshold, net_rainfall[n])
@@ -113,6 +118,8 @@ class KBDI(object):
             already_subtracted = np.where((daily_prcp[n] < threshold) & (consec == True) & (running_total > threshold), True, already_subtracted)
             running_total = np.where((daily_prcp[n] < threshold) & (consec == True) & (running_total > threshold), 0, running_total)
             n+=1
+            if n % step == 0 or n == total:
+                print("    [KBDI] net rainfall: %d/%d days (%d%%)" % (n, total, 100 * n // total))
         net_rain = feature.RasterStack()
         net_rain.create_sc_stack(net_rainfall,
                                 self.prcp.datelist,
@@ -133,7 +140,11 @@ class KBDI(object):
     def calculate_mean_annual_rainfall(self):
         """
         Calculates a mean annual rainfall value for each cell in the input data.
-        It is assumed that the data is daily data without missing values and starts on January 1st.
+        The value is estimated from the full record: the total rainfall over every
+        day of data, scaled to a 365.25-day year. This uses the data exactly as
+        supplied (starting wherever it starts), so a partial first or last year no
+        longer biases the result. It is assumed that the data is daily data without
+        missing values.
 
         Parameters:
         -----------
@@ -147,25 +158,12 @@ class KBDI(object):
         """
         raindata = copy.deepcopy(self.prcp.data)
         dates = self.prcp.datelist
-        running_total = 0
-        yearly_sums = None
-        n = 0
-        cur_year = dates[n].year
-        while n < len(dates):
-            if dates[n].year != cur_year: # we've hit a new year. 1. store the running total in the yearlySums and restart the running total
-                if yearly_sums is None:
-                    yearly_sums = np.array([running_total])
-                else:
-                    yearly_sums = np.append(yearly_sums, [running_total], axis=0)
-                cur_year = dates[n].year
-                running_total = raindata[n]
-            else:
-                running_total += raindata[n]
-            n+=1
-        # make sure to include the last year of data. The while condition doesn't    
-        if dates[n-1].month == 12 and dates[n-1] == 31: 
-            yearly_sums = np.append(yearly_sums, [running_total], axis=0)
-        annual_mean = np.mean(yearly_sums, axis=0)
+        # number of years = actual elapsed calendar days (inclusive of both ends,
+        # so every real leap day in the record is counted) over the mean year
+        # length. anchoring to the dates rather than the row count keeps this exact
+        # w.r.t. leap years and robust if the rows aren't strictly one-per-day.
+        num_years = ((dates[-1] - dates[0]).days + 1) / 365.25
+        annual_mean = np.sum(raindata, axis=0) / num_years
         mean_rain = feature.Raster(np.array([annual_mean]),
                                     {0: 0},
                                    datetime.datetime(1976, 7, 4),
@@ -229,15 +227,19 @@ class KBDI(object):
         prev_kbdi_data = prev_KBDI.data
         
         n = 0
-        while n < len(self.temp.data):
-            # today's ET requires yesterday's KBDI, yesterday's temp, and mean annual rainfall. 
-            ET = self.calculate_ET(prev_kbdi_data, self.temp.data[n]) 
+        total = len(self.temp.data)
+        step = max(1, total // 20)
+        while n < total:
+            # today's ET requires yesterday's KBDI, yesterday's temp, and mean annual rainfall.
+            ET = self.calculate_ET(prev_kbdi_data, self.temp.data[n])
             # KBDI for today is calculated based on yesterday's KBDI, ET, and yesterday's effective prcp (net rainfall)  
             KBDI = prev_kbdi_data + ET - self.net_rainfall.data[n]  # output is a 2d array
             KBDI = np.where(KBDI < 0, 0, KBDI) # KBDI values can't be negative
-            kb_cube[n] = KBDI # set kb_cube to today's KBDI, this then becomes yesterday's KBDI at the next iteration 
+            kb_cube[n] = KBDI # set kb_cube to today's KBDI, this then becomes yesterday's KBDI at the next iteration
             prev_kbdi_data = KBDI # prev_KBDI.set_data(KBDI)
             n+=1
+            if n % step == 0 or n == total:
+                print("    [KBDI] drought index: %d/%d days (%d%%)" % (n, total, 100 * n // total))
         out_kbdi = feature.RasterStack()
         out_kbdi.create_sc_stack(kb_cube,
                                       self.temp.datelist,

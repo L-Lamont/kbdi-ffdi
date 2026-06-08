@@ -20,6 +20,16 @@ def __parse_args():
                         dest='output_filename',
                         required=True,
                         type=str)
+    parser.add_argument('-s',
+                        '--spinup-days',
+                        dest='spinup_days',
+                        type=int,
+                        default=0,
+                        help="number of leading days to drop from the output CSV as "
+                             "KBDI spin-up. These days are still computed (the cumulative "
+                             "index needs them) but not written, since the index starts "
+                             "from an arbitrary KBDI=0 and the early values are unreliable. "
+                             "Default 0 (write everything).")
     parser.add_argument('-v',
                         '--verbose',
                         dest='verbose',
@@ -31,6 +41,7 @@ def __parse_args():
         print("------------ User Input ----------------")
         print('input file:\t' + args.input_filename)
         print('output file:\t' + args.output_filename)
+        print('spin-up days:\t' + str(args.spinup_days))
         print()
 
     return args
@@ -55,20 +66,22 @@ def __check_args(args):
 
     return args_are_good
 
-def run_kbdi_ffdi(input_filename, output_filename):
+def run_kbdi_ffdi(input_filename, output_filename, spinup_days=0):
     print('[INFO] reading input')
     rain, temp, relhum, wind = input_output.load_csv(input_filename)
-    
+
     print("[INFO] computing KBDI")
     kbdi = indices.KBDI()
     out_kbdi = kbdi.fit(temp, rain)
-    
+
     print("[INFO] computing FFDI")
     ffdi = indices.FFDI()
     out_ffdi, out_df = ffdi.fit(out_kbdi, rain, temp, wind, relhum)
 
     print("[INFO] writing output to .csv")
-    input_output.write_csv(input_filename, output_filename, out_kbdi, out_ffdi, out_df)
+    if spinup_days:
+        print("       (dropping first %d day(s) as spin-up)" % spinup_days)
+    input_output.write_csv(input_filename, output_filename, out_kbdi, out_ffdi, out_df, spinup_days=spinup_days)
 
 
 def main():
@@ -86,7 +99,7 @@ def main():
     args = __parse_args()
 
     if __check_args(args):
-        run_kbdi_ffdi(args.input_filename, args.output_filename)
+        run_kbdi_ffdi(args.input_filename, args.output_filename, args.spinup_days)
 
     tot_sec = time.time() - start_time
     minutes = int(tot_sec // 60)
