@@ -115,7 +115,14 @@ def load_csv(filename):
 
     datelist = [parse_date(r[date_col]) for r in data]
     out_rainfall = data[:, rain_col].astype(float).reshape(-1, 1, 1, 1)
-    out_rel_hum = data[:, hum_col].astype(float).reshape(-1, 1, 1, 1)
+    out_rel_hum = data[:, hum_col].astype(float)
+    # the FFDI equation expects relative humidity as a percentage (0-100). Some
+    # sources give it as a 0-1 fraction instead; if the values clearly sit on a
+    # 0-1 scale, rescale to percent. (A genuine percentage record reaches ~30+.)
+    if np.max(out_rel_hum) <= 1.0:
+        out_rel_hum = out_rel_hum * 100.0
+        print("[INFO] relative humidity looks like a 0-1 fraction; converted to percent")
+    out_rel_hum = out_rel_hum.reshape(-1, 1, 1, 1)
     out_wind = data[:, wind_col].astype(float).reshape(-1, 1, 1, 1)
     out_temp = data[:, temp_col].astype(float)
     # convert temperature from Kelvin to Celsius when it clearly looks like Kelvin
