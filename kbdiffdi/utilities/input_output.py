@@ -83,9 +83,12 @@ def load_csv(filename):
     # --- drop rows with missing / sentinel values -------------------------
     data = indata[1:]
     needed = [rain_col, temp_col, hum_col, wind_col]
+    def _num(s):
+        # tolerate a trailing percent sign / surrounding whitespace (e.g. "27.06%")
+        return s.replace("%", "").strip()
     def row_valid(r):
         for c in needed:
-            v = r[c].strip()
+            v = _num(r[c])
             if v == "":
                 return False
             try:
@@ -93,7 +96,7 @@ def load_csv(filename):
             except ValueError:
                 return False
         # reject absolute-zero temperature sentinels (e.g. -273.15 from 0 K)
-        return float(r[temp_col]) > -100.0
+        return float(_num(r[temp_col])) > -100.0
     valid = [row_valid(r) for r in data]
 
     # keep the longest contiguous run of valid days (continuity matters for KBDI)
@@ -114,8 +117,11 @@ def load_csv(filename):
               % (best_len, data[0][date_col].strip(), data[-1][date_col].strip(), dropped))
 
     datelist = [parse_date(r[date_col]) for r in data]
-    out_rainfall = data[:, rain_col].astype(float).reshape(-1, 1, 1, 1)
-    out_rel_hum = data[:, hum_col].astype(float)
+    def _col_to_float(col):
+        # tolerate a trailing percent sign / whitespace on numeric cells (e.g. "27.06%")
+        return np.char.strip(np.char.replace(data[:, col].astype(str), "%", "")).astype(float)
+    out_rainfall = _col_to_float(rain_col).reshape(-1, 1, 1, 1)
+    out_rel_hum = _col_to_float(hum_col)
     # the FFDI equation expects relative humidity as a percentage (0-100). Some
     # sources give it as a 0-1 fraction instead; if the values clearly sit on a
     # 0-1 scale, rescale to percent. (A genuine percentage record reaches ~30+.)
@@ -123,8 +129,8 @@ def load_csv(filename):
         out_rel_hum = out_rel_hum * 100.0
         print("[INFO] relative humidity looks like a 0-1 fraction; converted to percent")
     out_rel_hum = out_rel_hum.reshape(-1, 1, 1, 1)
-    out_wind = data[:, wind_col].astype(float).reshape(-1, 1, 1, 1)
-    out_temp = data[:, temp_col].astype(float)
+    out_wind = _col_to_float(wind_col).reshape(-1, 1, 1, 1)
+    out_temp = _col_to_float(temp_col)
     # convert temperature from Kelvin to Celsius when it clearly looks like Kelvin
     if np.median(out_temp) > 150:
         out_temp = out_temp - 273.15
